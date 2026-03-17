@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 type config struct {
@@ -21,6 +23,7 @@ type config struct {
 	RepoURL      string
 	Branch       string
 	Interval     time.Duration
+	Debounce     time.Duration
 	Token        string
 	GitHubUser   string
 	CommitPrefix string
@@ -53,6 +56,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	watcher, err := setupWatcher(cfg.Dir)
+	if err != nil {
+		slog.Error("no se pudo iniciar inotify", "error", err)
+		os.Exit(1)
+	}
+	defer watcher.Close()
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -63,19 +73,103 @@ func main() {
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
 
+	var debounceTimer *time.Timer
+	var debounceC <-chan time.Time
+	scheduleDebouncedSync := func() {
+		if debounceTimer == nil {
+			debounceTimer = time.NewTimer(cfg.Debounce)
+			debounceC = debounceTimer.C
+			return
+		}
+		if !debounceTimer.Stop() {
+			select {
+			case <-debounceTimer.C:
+			default:
+			}
+		}
+		debounceTimer.Reset(cfg.Debounce)
+		debounceC = debounceTimer.C
+	}
+
 	slog.Info("iniciando observacion", "dir", cfg.Dir, "interval", cfg.Interval.String())
 
 	for {
 		select {
 		case <-ctx.Done():
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
 			slog.Info("detenido por senal")
 			return
+		case event := <-watcher.Events:
+			if shouldIgnorePath(event.Name) {
+				continue
+			}
+			if event.Op&fsnotify.Create == fsnotify.Create {
+				if err := addDirWatchRecursive(watcher, event.Name); err != nil {
+					slog.Warn("no se pudo registrar nuevo directorio en inotify", "path", event.Name, "error", err)
+				}
+			}
+			if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) != 0 {
+				scheduleDebouncedSync()
+			}
+		case err := <-watcher.Errors:
+			slog.Error("error en watcher inotify", "error", err)
+		case <-debounceC:
+			debounceC = nil
+			if err := syncOnce(ctx, cfg); err != nil {
+				slog.Error("error en sincronizacion por inotify", "error", err)
+			}
 		case <-ticker.C:
 			if err := syncOnce(ctx, cfg); err != nil {
 				slog.Error("error en sincronizacion", "error", err)
 			}
 		}
 	}
+}
+
+func setupWatcher(rootDir string) (*fsnotify.Watcher, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := addDirWatchRecursive(watcher, rootDir); err != nil {
+		watcher.Close()
+		return nil, err
+	}
+
+	return watcher, nil
+}
+
+func addDirWatchRecursive(watcher *fsnotify.Watcher, root string) error {
+	st, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return nil
+	}
+
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if shouldIgnorePath(path) {
+			return filepath.SkipDir
+		}
+		if err := watcher.Add(path); err != nil {
+			return fmt.Errorf("no se pudo observar %s: %w", path, err)
+		}
+		return nil
+	})
+}
+
+func shouldIgnorePath(path string) bool {
+	return filepath.Base(path) == ".git"
 }
 
 func parseConfig() (config, error) {
@@ -85,6 +179,7 @@ func parseConfig() (config, error) {
 	flag.StringVar(&cfg.RepoURL, "repo", "", "URL HTTPS del repo GitHub (ej: https://github.com/org/repo.git)")
 	flag.StringVar(&cfg.Branch, "branch", "main", "Branch remota a mantener sincronizada")
 	flag.DurationVar(&cfg.Interval, "interval", 5*time.Minute, "Intervalo de revision (ej: 2m, 30s)")
+	flag.DurationVar(&cfg.Debounce, "debounce", 2*time.Second, "Ventana para agrupar eventos de inotify")
 	flag.StringVar(&cfg.Token, "token", "", "Token GitHub (opcional, tambien GITHUB_TOKEN)")
 	flag.StringVar(&cfg.GitHubUser, "github-user", "", "Usuario GitHub para autenticacion HTTPS (opcional, tambien GITHUB_USER)")
 	flag.StringVar(&cfg.CommitPrefix, "commit-prefix", "chore(sync): update Bruno data", "Prefijo del mensaje de commit")
@@ -107,6 +202,9 @@ func parseConfig() (config, error) {
 	}
 	if cfg.Interval < 10*time.Second {
 		return cfg, errors.New("-interval debe ser >= 10s")
+	}
+	if cfg.Debounce < 250*time.Millisecond {
+		return cfg, errors.New("-debounce debe ser >= 250ms")
 	}
 
 	absDir, err := filepath.Abs(cfg.Dir)
