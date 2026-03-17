@@ -5,4 +5,7 @@
 
 INTERVAL=2m
 DEBOUNCE=2s
-GITHUB_TOKEN=$(secret-tool lookup token GITHUB_BRUNO_TOKEN) ./bin/brusync -repo "https://github.com/andrestpp/http_workspace" -branch "master" -dir "/home/alamilla/Documents/work/http_workspace" -interval $INTERVAL -debounce $DEBOUNCE
+#DIR=/home/alamilla/Documents/work/http_workspace
+DIR=~/Documents/work/http_workspace
+LOG_LEVEL=error
+GITHUB_TOKEN=$(secret-tool lookup token GITHUB_BRUNO_TOKEN) ./bin/brusync -repo "https://github.com/andrestpp/http_workspace" -branch "master" -dir "$DIR" -interval $INTERVAL -debounce $DEBOUNCE -log-level $LOG_LEVEL

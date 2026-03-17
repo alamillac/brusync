@@ -26,20 +26,23 @@ type config struct {
 	Debounce     time.Duration
 	Token        string
 	GitHubUser   string
+	LogLevel     slog.Level
 	CommitPrefix string
 	AuthorName   string
 	AuthorEmail  string
 }
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
-
 	cfg, err := parseConfig()
 	if err != nil {
+		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		slog.SetDefault(logger)
 		slog.Error("configuracion invalida", "error", err)
 		os.Exit(1)
 	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	slog.SetDefault(logger)
 
 	if err := ensureGitAvailable(); err != nil {
 		slog.Error("git no disponible", "error", err)
@@ -182,10 +185,17 @@ func parseConfig() (config, error) {
 	flag.DurationVar(&cfg.Debounce, "debounce", 2*time.Second, "Ventana para agrupar eventos de inotify")
 	flag.StringVar(&cfg.Token, "token", "", "Token GitHub (opcional, tambien GITHUB_TOKEN)")
 	flag.StringVar(&cfg.GitHubUser, "github-user", "", "Usuario GitHub para autenticacion HTTPS (opcional, tambien GITHUB_USER)")
+	logLevel := flag.String("log-level", "info", "Nivel de log: debug, info, warn, error")
 	flag.StringVar(&cfg.CommitPrefix, "commit-prefix", "chore(sync): update Bruno data", "Prefijo del mensaje de commit")
 	flag.StringVar(&cfg.AuthorName, "author-name", "Brusync Bot", "Nombre autor de commits locales")
 	flag.StringVar(&cfg.AuthorEmail, "author-email", "brusync-bot@local", "Email autor de commits locales")
 	flag.Parse()
+
+	level, err := parseLogLevel(*logLevel)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.LogLevel = level
 
 	if cfg.Token == "" {
 		cfg.Token = os.Getenv("GITHUB_TOKEN")
@@ -222,6 +232,21 @@ func parseConfig() (config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parseLogLevel(raw string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("-log-level invalido: %q (usa debug|info|warn|error)", raw)
+	}
 }
 
 func ensureGitAvailable() error {

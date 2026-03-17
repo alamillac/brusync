@@ -38,6 +38,7 @@ export GITHUB_USER="tu-usuario-github"
 - `-debounce`: ventana para agrupar eventos de inotify (default: `2s`)
 - `-token`: token GitHub (opcional si usas `GITHUB_TOKEN`)
 - `-github-user`: usuario GitHub para autenticacion HTTPS (opcional, recomendado con PAT Fine-grained)
+- `-log-level`: nivel de logs (`debug`, `info`, `warn`, `error`; default: `info`)
 - `-commit-prefix`: prefijo del mensaje de commit
 - `-author-name` / `-author-email`: autor de commits locales
 
